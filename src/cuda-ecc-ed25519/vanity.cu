@@ -370,8 +370,6 @@ void __global__ vanity_scan(uint8_t* state, int* keys_found, int* gpu, int* exec
             }
         }
 
-        // Code Until here runs at 22_000_000H/s. So the above is fast enough.
-
         // Increment Seed.
         seed_limbs[0] += 1;
         seed_limbs[1] += 3;
