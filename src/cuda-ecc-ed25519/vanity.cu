@@ -400,7 +400,6 @@ void __device__ b58enc(
     
     #define R1_DIV 656356768UL
     #define RAW58_SZ (INTERMEDIATE_SZ * 5)
-    #define RAW58_SZ_WITH_PADDING 64
     
     uint32_t in_leading_0s = (__clz(binary[0]) >> 3) + (binary[0] == 0) * (__clz(binary[1]) >> 3);
     if (in_leading_0s == 8) {
@@ -465,7 +464,7 @@ void __device__ b58enc(
     intermediate[0] += intermediate[1] / R1_DIV;
     intermediate[1] %= R1_DIV;
 
-    uint8_t raw_base58[RAW58_SZ_WITH_PADDING];
+    uint8_t raw_base58[RAW58_SZ];
 
     #pragma unroll
     for (int i = 0; i < INTERMEDIATE_SZ; ++i) {
@@ -475,10 +474,9 @@ void __device__ b58enc(
         raw_base58[5 * i + 1] = ((((uint32_t) intermediate[i]) / 195112U  ) % 58U);
         raw_base58[5 * i + 0] = ( ((uint32_t) intermediate[i]) / 11316496U);    
     }
-    uint32_t t[2];
-    memcpy(t, raw_base58, 8);
-    uint32_t raw_leading_0s = (__clz(__byte_perm(t[0], 0, 0x0123)) >> 3) +
-        (t[0] == 0) * (__clz(__byte_perm(t[1], 0, 0x0123)) >> 3);
+    memcpy(binary, raw_base58, 8);
+    uint32_t raw_leading_0s = (__clz(__byte_perm(binary[0], 0, 0x0123)) >> 3) +
+        (binary[0] == 0) * (__clz(__byte_perm(binary[1], 0, 0x0123)) >> 3);
 
     if (raw_leading_0s == 8) {
         // Unlikely. Adding this printf somehow improves performance.
