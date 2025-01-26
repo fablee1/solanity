@@ -26,15 +26,15 @@
 /* -- Types ----------------------------------------------------------------- */
 
 typedef struct {
-    unsigned char** states;
+    uint8_t** states;
 } config;
 
 /* -- Prototypes, Because C++ ----------------------------------------------- */
 
 void            vanity_setup(config& vanity);
 void            vanity_run(config& vanity);
-void __global__ vanity_scan(unsigned char* state, int* keys_found, int* gpu, int* execution_count);
-void __device__ b58enc(char* b58, const uint8_t* data);
+void __global__ vanity_scan(uint8_t* state, int* keys_found, int* gpu, int* execution_count);
+void __device__ b58enc(uint8_t* b58, const uint8_t* data);
 
 /* -- Entry Point ----------------------------------------------------------- */
 
@@ -59,7 +59,7 @@ void vanity_setup(config &vanity) {
     printf("GPU: Initializing Memory\n");
     int gpuCount = 0;
     cudaGetDeviceCount(&gpuCount);
-    vanity.states = (unsigned char **) malloc(gpuCount * sizeof(unsigned char *));
+    vanity.states = (uint8_t **) malloc(gpuCount * sizeof(uint8_t *));
 
     // Create random states so kernels have access to random generators
     // while running in the GPU.
@@ -107,12 +107,12 @@ void vanity_setup(config &vanity) {
         );
 
         unsigned int n = maxActiveBlocks * blockSize * 32;
-        unsigned char *rseed = (unsigned char *) malloc(n);
+        uint8_t *rseed = (uint8_t *) malloc(n);
 
         std::random_device rd;
         std::uniform_int_distribution<int> dist(0, 255);
         for (unsigned int j = 0; j < n; ++j) {
-            rseed[j] = static_cast<unsigned char>(dist(rd));
+            rseed[j] = static_cast<uint8_t>(dist(rd));
         }
 
         cudaMalloc((void **)&(vanity.states[i]), n);
@@ -126,8 +126,8 @@ void vanity_run(config &vanity) {
     int gpuCount = 0;
     cudaGetDeviceCount(&gpuCount);
 
-    unsigned long long int  executions_total = 0; 
-    unsigned long long int  executions_this_iteration; 
+    uint64_t executions_total = 0; 
+    uint64_t executions_this_iteration; 
     int  executions_this_gpu; 
     int* dev_executions_this_gpu[100];
 
@@ -152,7 +152,7 @@ void vanity_run(config &vanity) {
 
             int* dev_g;
             cudaMalloc((void**)&dev_g, sizeof(int));
-            cudaMemcpy( dev_g, &g, sizeof(int), cudaMemcpyHostToDevice ); 
+            cudaMemcpy(dev_g, &g, sizeof(int), cudaMemcpyHostToDevice); 
 
             cudaMalloc((void**)&dev_keys_found[g], sizeof(int));        
             cudaMalloc((void**)&dev_executions_this_gpu[g], sizeof(int));       
@@ -184,11 +184,11 @@ void vanity_run(config &vanity) {
         std::chrono::duration<double> elapsed = finish - start;
         printf("%s Iteration %d Attempts: %llu in %f at %fcps - Total Attempts %llu - keys found %d\n",
             getTimeStr().c_str(),
-            i+1,
-            executions_this_iteration,
+            i + 1,
+            (unsigned long long int) executions_this_iteration,
             elapsed.count(),
             executions_this_iteration / elapsed.count(),
-            executions_total,
+            (unsigned long long int) executions_total,
             keys_found_total
         );
 
@@ -203,14 +203,13 @@ void vanity_run(config &vanity) {
 
 /* -- CUDA Vanity Functions ------------------------------------------------- */
 
-void __global__ vanity_scan(unsigned char* state, int* keys_found, int* gpu, int* exec_count) {
+void __global__ vanity_scan(uint8_t* state, int* keys_found, int* gpu, int* exec_count) {
     int id = threadIdx.x + blockIdx.x * blockDim.x +
         (threadIdx.y + blockIdx.y * blockDim.y) * gridDim.x * blockDim.x +
         (threadIdx.z + blockIdx.z * blockDim.z) * gridDim.x * blockDim.x * gridDim.y * blockDim.y;
 
     atomicAdd(exec_count, 1);
 
-    // SMITH - should really be passed in, but hey ho
     int prefix_letter_counts[MAX_PATTERNS];
     for (unsigned int n = 0; n < sizeof(prefixes) / sizeof(prefixes[0]); ++n) {
         if (MAX_PATTERNS == n) {
@@ -221,39 +220,31 @@ void __global__ vanity_scan(unsigned char* state, int* keys_found, int* gpu, int
         for (; prefixes[n][letter_count] != 0; letter_count++);
         prefix_letter_counts[n] = letter_count;
     }
-    char prefix_ignore_case_char_masks[64];
+    uint8_t prefix_ignore_case_char_masks[64];
     for (int i = 0; i < 64; i++) prefix_ignore_case_char_masks[i] = 0xff;
     for (int i = 0; prefix_ignore_case_mask[i] != 0 && i < 64; i++) {
-        prefix_ignore_case_char_masks[i] ^= (prefix_ignore_case_mask[i] == 64) << 5;
+        prefix_ignore_case_char_masks[i] ^= (prefix_ignore_case_mask[i] == '@') << 5;
     }
     
     // Local Kernel State
     ge_p3 A;
-    unsigned int seed_limbs[8] = {0};
-    unsigned char seed[32]     = {0};
-    unsigned char publick[32]  = {0};
-    unsigned char privatek[64] = {0};
-    char key[256]              = {0};
+    uint32_t seed_limbs[8] = {0};
+    uint8_t seed[32] = {0};
+    uint8_t publick[32] = {0};
+    uint8_t privatek[64] = {0};
+    uint8_t key[256] = {0};
 
     memcpy(seed_limbs, state + id * 32, 32);
 
-    // Generate Random Key Data
     sha512_context md;
 
-    // I've unrolled all the MD5 calls and special cased them to 32 byte
-    // inputs, which eliminates a lot of branching. This is a pretty poor
-    // way to optimize GPU code though.
-    //
-    // A better approach would be to split this application into two
-    // different kernels, one that is warp-efficient for SHA512 generation,
-    // and another that is warp efficient for bignum division to more
-    // efficiently scan for prefixes. Right now bs58enc cuts performance
-    // from 16M keys on my machine per second to 4M.
+    // Optimization approach:
+    // Focus letting optimizing anything within the ATTEMPTS_PER_EXECUTION loop.
+    // Make most-likely path be as branchless as possible to minimize wrap divergence.
+
     for (int attempts = 0; attempts < ATTEMPTS_PER_EXECUTION; ++attempts) {
         memcpy(seed, seed_limbs, 32);
         // sha512_init Inlined
-        md.curlen   = 0;
-        md.length   = 0;
         md.state[0] = UINT64_C(0x6a09e667f3bcc908);
         md.state[1] = UINT64_C(0xbb67ae8584caa73b);
         md.state[2] = UINT64_C(0x3c6ef372fe94f82b);
@@ -274,8 +265,7 @@ void __global__ vanity_scan(unsigned char* state, int* keys_found, int* gpu, int
         //   * We can eliminate a MIN(inlen, (128 - md.curlen)) comparison, specialize to 32, branch prediction improvement.
         //   * We can eliminate the in/inlen tracking as we will never subtract while under 128
         //   * As a result, the only thing update does is copy the bytes into the buffer.
-        memcpy(md.buf + md.curlen, seed, 32);
-        md.curlen += 32;
+        memcpy(md.buf, seed, 32);
 
         // sha512_final inlined
         // 
@@ -286,35 +276,35 @@ void __global__ vanity_scan(unsigned char* state, int* keys_found, int* gpu, int
         // This means:
         //   * We don't need to care about the curlen > 112 check. Eliminating a branch.
         //   * We only need to run one round of sha512_compress, so we can inline it entirely as we don't need to unroll.
-        md.length += md.curlen * UINT64_C(8);
-        md.buf[md.curlen++] = (unsigned char)0x80;
+        md.length = 32 * UINT64_C(8);
+        md.buf[32] = (uint8_t) 0x80;
 
         #pragma unroll
-        while (md.curlen < 120) {
-            md.buf[md.curlen++] = (unsigned char)0;
+        for (int i = 33; i < 120; i++) {
+            md.buf[i] = (uint8_t) 0;
         }
+        md.curlen = 120;
 
-        STORE64H(md.length, md.buf+120);
+        STORE64H(md.length, md.buf + 120);
 
         // Inline sha512_compress
         uint64_t S[8], W[80], t0, t1;
-        int i;
 
         /* Copy state into S */
         #pragma unroll
-        for (i = 0; i < 8; i++) {
+        for (int i = 0; i < 8; i++) {
             S[i] = md.state[i];
         }
 
         /* Copy the state into 1024-bits into W[0..15] */
         #pragma unroll
-        for (i = 0; i < 16; i++) {
+        for (int i = 0; i < 16; i++) {
             LOAD64H(W[i], md.buf + (8*i));
         }
 
         /* Fill W[16..79] */
         #pragma unroll
-        for (i = 16; i < 80; i++) {
+        for (int i = 16; i < 80; i++) {
             W[i] = Gamma1(W[i - 2]) + W[i - 7] + Gamma0(W[i - 15]) + W[i - 16];
         }
 
@@ -326,7 +316,7 @@ void __global__ vanity_scan(unsigned char* state, int* keys_found, int* gpu, int
         h  = t0 + t1;
 
         #pragma unroll
-        for (i = 0; i < 80; i += 8) {
+        for (int i = 0; i < 80; i += 8) {
             RND(S[0],S[1],S[2],S[3],S[4],S[5],S[6],S[7],i+0);
             RND(S[7],S[0],S[1],S[2],S[3],S[4],S[5],S[6],i+1);
             RND(S[6],S[7],S[0],S[1],S[2],S[3],S[4],S[5],i+2);
@@ -341,17 +331,15 @@ void __global__ vanity_scan(unsigned char* state, int* keys_found, int* gpu, int
 
         /* Feedback */
         #pragma unroll
-        for (i = 0; i < 8; i++) {
+        for (int i = 0; i < 8; i++) {
             md.state[i] = md.state[i] + S[i];
         }
 
         // We can now output our finalized bytes into the output buffer.
         #pragma unroll
-        for (i = 0; i < 8; i++) {
+        for (int i = 0; i < 8; i++) {
             STORE64H(md.state[i], privatek+(8*i));
         }
-
-        // Code Until here runs at 87_000_000H/s.
 
         // ed25519 Hash Clamping
         privatek[0]  &= 248;
@@ -362,76 +350,40 @@ void __global__ vanity_scan(unsigned char* state, int* keys_found, int* gpu, int
         ge_scalarmult_base(&A, privatek);
         ge_p3_tobytes(publick, &A);
 
-        // Code Until here runs at 87_000_000H/s still!
-
         b58enc(key, publick);
-
-        // Code Until here runs at 22_000_000H/s. b58enc badly needs optimization.
-
-        // We don't have access to strncmp/strlen here, I don't know
-        // what the efficient way of doing this on a GPU is, so I'll
-        // start with a dumb loop. There seem to be implementations out
-        // there of bignunm division done in parallel as a CUDA kernel
-        // so it might make sense to write a new parallel kernel to do
-        // this.
 
         #define CONDITIONAL_CASE_CHAR_EQ(a, b, j) ((prefix_ignore_case_char_masks[j] & (a[j] ^ b[j])) == 0)
         #define IN_RANGE_CHAR_EQ(j) ((CONDITIONAL_CASE_CHAR_EQ(prefixes[i], key, j) | (prefixes[i][j] == '?')))
         #define CHAR_EQ(j) ((j >= prefix_letter_counts[i]) | IN_RANGE_CHAR_EQ(j))
+        #define CHAR4_EQ(k) (CHAR_EQ(k + 0) & CHAR_EQ(k + 1) & CHAR_EQ(k + 2) & CHAR_EQ(k + 3))
 
         for (int i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i) {
-            if (!(
-                CHAR_EQ(0) & CHAR_EQ(1) & CHAR_EQ(2) & CHAR_EQ(3) &
-                CHAR_EQ(4) & CHAR_EQ(5) & CHAR_EQ(6) & CHAR_EQ(7)
-            )) continue;
+            if (!(CHAR4_EQ(0) & CHAR4_EQ(4))) continue; // Likely path.
 
             for (int j = 0; j < prefix_letter_counts[i]; ++j) {
                 if (!IN_RANGE_CHAR_EQ(j)) break;
 
-                // we got to the end of the prefix pattern, it matched!
                 if (j == ( prefix_letter_counts[i] - 1)) {
                     atomicAdd(keys_found, 1);
-                    //size_t pkeysize = 256;
-                    //b58enc(pkey, &pkeysize, seed, 32);
-                                       
-                    // SMITH    
-                    // The 'key' variable is the public key in base58 'address' format
-                    // We display the seed in hex
-
-                    // Solana stores the keyfile as seed (first 32 bytes)
-                    // followed by public key (last 32 bytes)
-                    // as an array of decimal numbers in json format
 
                     printf("GPU %d MATCH %s - ", *gpu, key);
                     for (int n = 0; n < sizeof(seed); n++) { 
-                        printf("%02x", (unsigned char)seed[n]); 
+                        printf("%02x", (uint8_t) seed[n]); 
                     }
                     printf("\n");
                     
                     printf("[");
                     for (int n = 0; n < sizeof(seed); n++) { 
-                        printf("%d,", (unsigned char)seed[n]);
+                        printf("%d,", (uint8_t) seed[n]);
                     }
                     for (int n = 0; n < sizeof(publick); n++) {
                         if (n + 1 == sizeof(publick)) {   
-                            printf("%d",publick[n]);
+                            printf("%d", publick[n]);
                         } else {
-                            printf("%d,",publick[n]);
+                            printf("%d,", publick[n]);
                         }
                     }
                     printf("]\n");
-
-                    /*
-                    printf("Public: ");
-                                        for(int n=0; n<sizeof(publick); n++) { printf("%d ",publick[n]); }
-                    printf("\n");
-                    printf("Private: ");
-                                        for(int n=0; n<sizeof(privatek); n++) { printf("%d ",privatek[n]); }
-                    printf("\n");
-                    printf("Seed: ");
-                                        for(int n=0; n<sizeof(seed); n++) { printf("%d ",seed[n]); }
-                    printf("\n");
-                    */
 
                     break;
                 }
@@ -454,13 +406,13 @@ void __global__ vanity_scan(unsigned char* state, int* keys_found, int* gpu, int
 
 // Modified from https://github.com/firedancer-io/firedancer/tree/main/src/ballet/base58
 void __device__ b58enc(
-    char    *b58,
+    uint8_t *b58,
     const uint8_t *data
 ) {
     #define BINARY_SZ 8
     #define INTERMEDIATE_SZ 9    
 
-    unsigned int binary[BINARY_SZ];
+    uint32_t binary[BINARY_SZ];
     memcpy(binary, data, 32);
 
     #pragma unroll
@@ -472,49 +424,50 @@ void __device__ b58enc(
     #define RAW58_SZ (INTERMEDIATE_SZ * 5)
     #define RAW58_SZ_WITH_PADDING 64
     
-    unsigned int in_leading_0s = (__clz(binary[0]) >> 3) + (binary[0] == 0) * (__clz(binary[1]) >> 3);
+    uint32_t in_leading_0s = (__clz(binary[0]) >> 3) + (binary[0] == 0) * (__clz(binary[1]) >> 3);
     if (in_leading_0s == 8) {
+        // Unlikely.
         for (; in_leading_0s < 32; in_leading_0s++) if (data[in_leading_0s]) break;    
     }
     
-    unsigned long intermediate[INTERMEDIATE_SZ] = {0};
+    uint64_t intermediate[INTERMEDIATE_SZ] = {0};
     
-    intermediate[1] += (unsigned long) binary[0] * (unsigned long) 513735UL;
-    intermediate[2] += (unsigned long) binary[0] * (unsigned long) 77223048UL;
-    intermediate[3] += (unsigned long) binary[0] * (unsigned long) 437087610UL;
-    intermediate[4] += (unsigned long) binary[0] * (unsigned long) 300156666UL;
-    intermediate[5] += (unsigned long) binary[0] * (unsigned long) 605448490UL;
-    intermediate[6] += (unsigned long) binary[0] * (unsigned long) 214625350UL;
-    intermediate[7] += (unsigned long) binary[0] * (unsigned long) 141436834UL;
-    intermediate[8] += (unsigned long) binary[0] * (unsigned long) 379377856UL;
-    intermediate[2] += (unsigned long) binary[1] * (unsigned long) 78508UL;
-    intermediate[3] += (unsigned long) binary[1] * (unsigned long) 646269101UL;
-    intermediate[4] += (unsigned long) binary[1] * (unsigned long) 118408823UL;
-    intermediate[5] += (unsigned long) binary[1] * (unsigned long) 91512303UL;
-    intermediate[6] += (unsigned long) binary[1] * (unsigned long) 209184527UL;
-    intermediate[7] += (unsigned long) binary[1] * (unsigned long) 413102373UL;
-    intermediate[8] += (unsigned long) binary[1] * (unsigned long) 153715680UL;
-    intermediate[3] += (unsigned long) binary[2] * (unsigned long) 11997UL;
-    intermediate[4] += (unsigned long) binary[2] * (unsigned long) 486083817UL;
-    intermediate[5] += (unsigned long) binary[2] * (unsigned long) 3737691UL;
-    intermediate[6] += (unsigned long) binary[2] * (unsigned long) 294005210UL;
-    intermediate[7] += (unsigned long) binary[2] * (unsigned long) 247894721UL;
-    intermediate[8] += (unsigned long) binary[2] * (unsigned long) 289024608UL;
-    intermediate[4] += (unsigned long) binary[3] * (unsigned long) 1833UL;
-    intermediate[5] += (unsigned long) binary[3] * (unsigned long) 324463681UL;
-    intermediate[6] += (unsigned long) binary[3] * (unsigned long) 385795061UL;
-    intermediate[7] += (unsigned long) binary[3] * (unsigned long) 551597588UL;
-    intermediate[8] += (unsigned long) binary[3] * (unsigned long) 21339008UL;
-    intermediate[5] += (unsigned long) binary[4] * (unsigned long) 280UL;
-    intermediate[6] += (unsigned long) binary[4] * (unsigned long) 127692781UL;
-    intermediate[7] += (unsigned long) binary[4] * (unsigned long) 389432875UL;
-    intermediate[8] += (unsigned long) binary[4] * (unsigned long) 357132832UL;
-    intermediate[6] += (unsigned long) binary[5] * (unsigned long) 42UL;
-    intermediate[7] += (unsigned long) binary[5] * (unsigned long) 537767569UL;
-    intermediate[8] += (unsigned long) binary[5] * (unsigned long) 410450016UL;
-    intermediate[7] += (unsigned long) binary[6] * (unsigned long) 6UL;
-    intermediate[8] += (unsigned long) binary[6] * (unsigned long) 356826688UL;
-    intermediate[8] += (unsigned long) binary[7] * (unsigned long) 1UL;
+    intermediate[1] += (uint64_t) binary[0] * (uint64_t) 513735UL;
+    intermediate[2] += (uint64_t) binary[0] * (uint64_t) 77223048UL;
+    intermediate[3] += (uint64_t) binary[0] * (uint64_t) 437087610UL;
+    intermediate[4] += (uint64_t) binary[0] * (uint64_t) 300156666UL;
+    intermediate[5] += (uint64_t) binary[0] * (uint64_t) 605448490UL;
+    intermediate[6] += (uint64_t) binary[0] * (uint64_t) 214625350UL;
+    intermediate[7] += (uint64_t) binary[0] * (uint64_t) 141436834UL;
+    intermediate[8] += (uint64_t) binary[0] * (uint64_t) 379377856UL;
+    intermediate[2] += (uint64_t) binary[1] * (uint64_t) 78508UL;
+    intermediate[3] += (uint64_t) binary[1] * (uint64_t) 646269101UL;
+    intermediate[4] += (uint64_t) binary[1] * (uint64_t) 118408823UL;
+    intermediate[5] += (uint64_t) binary[1] * (uint64_t) 91512303UL;
+    intermediate[6] += (uint64_t) binary[1] * (uint64_t) 209184527UL;
+    intermediate[7] += (uint64_t) binary[1] * (uint64_t) 413102373UL;
+    intermediate[8] += (uint64_t) binary[1] * (uint64_t) 153715680UL;
+    intermediate[3] += (uint64_t) binary[2] * (uint64_t) 11997UL;
+    intermediate[4] += (uint64_t) binary[2] * (uint64_t) 486083817UL;
+    intermediate[5] += (uint64_t) binary[2] * (uint64_t) 3737691UL;
+    intermediate[6] += (uint64_t) binary[2] * (uint64_t) 294005210UL;
+    intermediate[7] += (uint64_t) binary[2] * (uint64_t) 247894721UL;
+    intermediate[8] += (uint64_t) binary[2] * (uint64_t) 289024608UL;
+    intermediate[4] += (uint64_t) binary[3] * (uint64_t) 1833UL;
+    intermediate[5] += (uint64_t) binary[3] * (uint64_t) 324463681UL;
+    intermediate[6] += (uint64_t) binary[3] * (uint64_t) 385795061UL;
+    intermediate[7] += (uint64_t) binary[3] * (uint64_t) 551597588UL;
+    intermediate[8] += (uint64_t) binary[3] * (uint64_t) 21339008UL;
+    intermediate[5] += (uint64_t) binary[4] * (uint64_t) 280UL;
+    intermediate[6] += (uint64_t) binary[4] * (uint64_t) 127692781UL;
+    intermediate[7] += (uint64_t) binary[4] * (uint64_t) 389432875UL;
+    intermediate[8] += (uint64_t) binary[4] * (uint64_t) 357132832UL;
+    intermediate[6] += (uint64_t) binary[5] * (uint64_t) 42UL;
+    intermediate[7] += (uint64_t) binary[5] * (uint64_t) 537767569UL;
+    intermediate[8] += (uint64_t) binary[5] * (uint64_t) 410450016UL;
+    intermediate[7] += (uint64_t) binary[6] * (uint64_t) 6UL;
+    intermediate[8] += (uint64_t) binary[6] * (uint64_t) 356826688UL;
+    intermediate[8] += (uint64_t) binary[7] * (uint64_t) 1UL;
     
     intermediate[7] += intermediate[8] / R1_DIV;
     intermediate[8] %= R1_DIV;
@@ -533,29 +486,30 @@ void __device__ b58enc(
     intermediate[0] += intermediate[1] / R1_DIV;
     intermediate[1] %= R1_DIV;
     
-    uint_fast8_t raw_base58[RAW58_SZ_WITH_PADDING];
+    uint8_t raw_base58[RAW58_SZ_WITH_PADDING];
     
     #pragma unroll
     for (int i = 0; i < INTERMEDIATE_SZ; ++i) {
-        raw_base58[5 * i + 4] = ((((unsigned int) intermediate[i]) / 1U       ) % 58U);
-        raw_base58[5 * i + 3] = ((((unsigned int) intermediate[i]) / 58U      ) % 58U);
-        raw_base58[5 * i + 2] = ((((unsigned int) intermediate[i]) / 3364U    ) % 58U);
-        raw_base58[5 * i + 1] = ((((unsigned int) intermediate[i]) / 195112U  ) % 58U);
-        raw_base58[5 * i + 0] = ( ((unsigned int) intermediate[i]) / 11316496U);    
+        raw_base58[5 * i + 4] = ((((uint32_t) intermediate[i]) / 1U       ) % 58U);
+        raw_base58[5 * i + 3] = ((((uint32_t) intermediate[i]) / 58U      ) % 58U);
+        raw_base58[5 * i + 2] = ((((uint32_t) intermediate[i]) / 3364U    ) % 58U);
+        raw_base58[5 * i + 1] = ((((uint32_t) intermediate[i]) / 195112U  ) % 58U);
+        raw_base58[5 * i + 0] = ( ((uint32_t) intermediate[i]) / 11316496U);    
     }
-    unsigned int t[2];
+    uint32_t t[2];
     memcpy(t, raw_base58, 8);
-    unsigned int raw_leading_0s = (__clz(__byte_perm(t[0], 0, 0x0123)) >> 3) +
+    uint32_t raw_leading_0s = (__clz(__byte_perm(t[0], 0, 0x0123)) >> 3) +
         (t[0] == 0) * (__clz(__byte_perm(t[1], 0, 0x0123)) >> 3);
 
     if (raw_leading_0s == 8) {
+        // Unlikely.
         for (; raw_leading_0s < RAW58_SZ; raw_leading_0s++) if (raw_base58[raw_leading_0s]) break;    
     }
 
-    unsigned int skip = raw_leading_0s - in_leading_0s;
+    uint32_t skip = raw_leading_0s - in_leading_0s;
     
-    static uint_fast8_t const b58digits_ordered[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
-    const unsigned int n = RAW58_SZ - skip;
+    static uint8_t const b58digits_ordered[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    const uint32_t n = RAW58_SZ - skip;
     #pragma unroll
     for (int i = 0; i < RAW58_SZ; i++) b58[i] = b58digits_ordered[raw_base58[min(skip + i, RAW58_SZ - 1)]];
     b58[n] = 0;
