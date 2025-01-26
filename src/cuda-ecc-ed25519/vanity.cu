@@ -77,18 +77,6 @@ void vanity_setup(config &vanity) {
         cudaOccupancyMaxPotentialBlockSize(&minGridSize, &blockSize, vanity_scan, 0, 0);
         cudaOccupancyMaxActiveBlocksPerMultiprocessor(&maxActiveBlocks, vanity_scan, blockSize, 0);
 
-        // Output Device Details
-        // 
-        // Our kernels currently don't take advantage of data locality
-        // or how warp execution works, so each thread can be thought
-        // of as a totally independent thread of execution (bad). On
-        // the bright side, this means we can really easily calculate
-        // maximum occupancy for a GPU because we don't have to care
-        // about building blocks well. Essentially we're trading away
-        // GPU SIMD ability for standard parallelism, which CPUs are
-        // better at and GPUs suck at.
-        //
-        // Next Weekend Project: ^ Fix this.
         printf("GPU: %d (%s <%d, %d, %d>) -- W: %d, P: %d, TPB: %d, MTD: (%dx, %dy, %dz), MGS: (%dx, %dy, %dz)\n",
             i,
             device.name,
@@ -158,26 +146,18 @@ void vanity_run(config &vanity) {
             cudaMalloc((void**)&dev_executions_this_gpu[g], sizeof(int));       
 
             vanity_scan<<<maxActiveBlocks, blockSize>>>(vanity.states[g], dev_keys_found[g], dev_g, dev_executions_this_gpu[g]);
-
         }
 
-        // Synchronize while we wait for kernels to complete. I do not
-        // actually know if this will sync against all GPUs, it might
-        // just sync with the last `i`, but they should all complete
-        // roughly at the same time and worst case it will just stack
-        // up kernels in the queue to run.
         cudaDeviceSynchronize();
         auto finish = std::chrono::high_resolution_clock::now();
 
         for (int g = 0; g < gpuCount; ++g) {
             cudaMemcpy( &keys_found_this_iteration, dev_keys_found[g], sizeof(int), cudaMemcpyDeviceToHost ); 
             keys_found_total += keys_found_this_iteration; 
-            //printf("GPU %d found %d keys\n",g,keys_found_this_iteration);
 
             cudaMemcpy( &executions_this_gpu, dev_executions_this_gpu[g], sizeof(int), cudaMemcpyDeviceToHost ); 
             executions_this_iteration += executions_this_gpu * ATTEMPTS_PER_EXECUTION; 
             executions_total += executions_this_gpu * ATTEMPTS_PER_EXECUTION; 
-            //printf("GPU %d executions: %d\n",g,executions_this_gpu);
         }
 
         // Print out performance Summary
@@ -485,9 +465,9 @@ void __device__ b58enc(
     intermediate[2] %= R1_DIV;
     intermediate[0] += intermediate[1] / R1_DIV;
     intermediate[1] %= R1_DIV;
-    
+
     uint8_t raw_base58[RAW58_SZ_WITH_PADDING];
-    
+
     #pragma unroll
     for (int i = 0; i < INTERMEDIATE_SZ; ++i) {
         raw_base58[5 * i + 4] = ((((uint32_t) intermediate[i]) / 1U       ) % 58U);
