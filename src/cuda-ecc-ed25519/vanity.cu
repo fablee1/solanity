@@ -239,7 +239,7 @@ void __global__ vanity_scan(uint8_t* state, int* keys_found, int* gpu, int* exec
     sha512_context md;
 
     // Optimization approach:
-    // Focus letting optimizing anything within the ATTEMPTS_PER_EXECUTION loop.
+    // Focus optimizing anything within the ATTEMPTS_PER_EXECUTION loop.
     // Make most-likely path be as branchless as possible to minimize wrap divergence.
 
     for (int attempts = 0; attempts < ATTEMPTS_PER_EXECUTION; ++attempts) {
