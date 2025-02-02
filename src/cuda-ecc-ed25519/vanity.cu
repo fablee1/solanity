@@ -333,9 +333,12 @@ void __global__ vanity_scan(uint8_t* state, int* keys_found, int* gpu, int* exec
         b58enc(key, publick);
 
         #define CONDITIONAL_CASE_CHAR_EQ(a, b, j) ((suffix_ignore_case_char_masks[j] & (a[j] ^ b[j])) == 0)
-    #define IN_RANGE_CHAR_EQ(j) ((CONDITIONAL_CASE_CHAR_EQ(suffixes[i], key + (key_len - suffix_letter_counts[i]), j) | (suffixes[i][j] == '?')))
-    #define CHAR_EQ(j) ((j >= suffix_letter_counts[i]) | IN_RANGE_CHAR_EQ(j))
-    #define CHAR4_EQ(k) (CHAR_EQ(k + 0) & CHAR_EQ(k + 1) & CHAR_EQ(k + 2) & CHAR_EQ(k + 3))
+        #define IN_RANGE_CHAR_EQ(j) { \
+            const uint8_t* suffix_start = key + (key_len - suffix_letter_counts[i]); \
+            (CONDITIONAL_CASE_CHAR_EQ(suffixes[i], suffix_start, j) | (suffixes[i][j] == '?')); \
+        }
+        #define CHAR_EQ(j) ((j >= suffix_letter_counts[i]) | IN_RANGE_CHAR_EQ(j))
+        #define CHAR4_EQ(k) (CHAR_EQ(k + 0) & CHAR_EQ(k + 1) & CHAR_EQ(k + 2) & CHAR_EQ(k + 3))
 
         // Get the key length
         int key_len = 0;
@@ -353,10 +356,14 @@ void __global__ vanity_scan(uint8_t* state, int* keys_found, int* gpu, int* exec
                 }
             }
             
+            // Calculate start position for suffix comparison
+            const uint8_t* suffix_start = key + (key_len - suffix_letter_counts[i]);
+            
             if (do_quick_check && !(CHAR4_EQ(0))) continue; // Likely path.
 
             for (int j = 0; j < suffix_letter_counts[i]; ++j) {
-                if (!IN_RANGE_CHAR_EQ(j)) break;
+                const uint8_t* suffix_start = key + (key_len - suffix_letter_counts[i]);
+                if (!((suffix_ignore_case_char_masks[j] & (suffixes[i][j] ^ suffix_start[j])) == 0 || suffixes[i][j] == '?')) break;
 
                 if (j == (suffix_letter_counts[i] - 1)) {
                     atomicAdd(keys_found, 1);
