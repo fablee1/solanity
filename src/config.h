@@ -14,10 +14,10 @@ __device__ static char const *suffixes[] = {
 	// "De1eg",
 	// "De1ega",
 	// "De1egat",
-	"SMTHCooL"
+	"FaBLe"
 };
 
 // "_" to denote exact case
 // "@" to denote case insensitive
-__device__ static char const *suffix_ignore_case_mask = "@@@@@@@@";
+__device__ static char const *suffix_ignore_case_mask = "_____";
 #endif
