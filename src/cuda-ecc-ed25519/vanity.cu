@@ -190,20 +190,20 @@ void __global__ vanity_scan(uint8_t* state, int* keys_found, int* gpu, int* exec
 
     atomicAdd(exec_count, 1);
 
-    int prefix_letter_counts[MAX_PATTERNS];
-    for (unsigned int n = 0; n < sizeof(prefixes) / sizeof(prefixes[0]); ++n) {
+    int suffix_letter_counts[MAX_PATTERNS];
+    for (unsigned int n = 0; n < sizeof(suffixes) / sizeof(suffixes[0]); ++n) {
         if (MAX_PATTERNS == n) {
             printf("NEVER SPEAK TO ME OR MY SON AGAIN");
             return;
         }
         int letter_count = 0;
-        for (; prefixes[n][letter_count] != 0; letter_count++);
-        prefix_letter_counts[n] = letter_count;
+        for (; suffixes[n][letter_count] != 0; letter_count++);
+        suffix_letter_counts[n] = letter_count;
     }
-    uint8_t prefix_ignore_case_char_masks[64];
-    for (int i = 0; i < 64; i++) prefix_ignore_case_char_masks[i] = 0xff;
-    for (int i = 0; prefix_ignore_case_mask[i] != 0 && i < 64; i++) {
-        prefix_ignore_case_char_masks[i] ^= (prefix_ignore_case_mask[i] == '@') << 5;
+    uint8_t suffix_ignore_case_char_masks[64];
+    for (int i = 0; i < 64; i++) suffix_ignore_case_char_masks[i] = 0xff;
+    for (int i = 0; suffix_ignore_case_mask[i] != 0 && i < 64; i++) {
+        suffix_ignore_case_char_masks[i] ^= (suffix_ignore_case_mask[i] == '@') << 5;
     }
     
     // Local Kernel State
@@ -332,18 +332,33 @@ void __global__ vanity_scan(uint8_t* state, int* keys_found, int* gpu, int* exec
 
         b58enc(key, publick);
 
-        #define CONDITIONAL_CASE_CHAR_EQ(a, b, j) ((prefix_ignore_case_char_masks[j] & (a[j] ^ b[j])) == 0)
-        #define IN_RANGE_CHAR_EQ(j) ((CONDITIONAL_CASE_CHAR_EQ(prefixes[i], key, j) | (prefixes[i][j] == '?')))
-        #define CHAR_EQ(j) ((j >= prefix_letter_counts[i]) | IN_RANGE_CHAR_EQ(j))
-        #define CHAR4_EQ(k) (CHAR_EQ(k + 0) & CHAR_EQ(k + 1) & CHAR_EQ(k + 2) & CHAR_EQ(k + 3))
+        #define CONDITIONAL_CASE_CHAR_EQ(a, b, j, offset) ((suffix_ignore_case_char_masks[j] & (a[j] ^ b[offset + j])) == 0)
+        #define IN_RANGE_CHAR_EQ(j, key_len) ((CONDITIONAL_CASE_CHAR_EQ(suffixes[i], key, key_len - suffix_letter_counts[i] + j) | (suffixes[i][j] == '?')))
+        #define CHAR_EQ(j, key_len) ((j >= suffix_letter_counts[i]) | IN_RANGE_CHAR_EQ(j, key_len))
+        #define CHAR4_EQ(k, key_len) (CHAR_EQ(k + 0, key_len) & CHAR_EQ(k + 1, key_len) & CHAR_EQ(k + 2, key_len) & CHAR_EQ(k + 3, key_len))
 
-        for (int i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i) {
-            if (!(CHAR4_EQ(0) & CHAR4_EQ(4))) continue; // Likely path.
+        // Get the key length
+        int key_len = 0;
+        while (key[key_len] && key_len < 256) key_len++;
 
-            for (int j = 0; j < prefix_letter_counts[i]; ++j) {
-                if (!IN_RANGE_CHAR_EQ(j)) break;
+        for (int i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); ++i) {
+            // Skip if key is too short for this suffix
+            if (key_len < suffix_letter_counts[i]) continue;
 
-                if (j == ( prefix_letter_counts[i] - 1)) {
+            // Only do quick check if suffix is long enough and has no wildcards in first 4 chars
+            bool do_quick_check = suffix_letter_counts[i] >= 4;
+            for (int j = 0; do_quick_check && j < 4; j++) {
+                if (suffixes[i][j] == '?') {
+                    do_quick_check = false;
+                }
+            }
+            
+            if (do_quick_check && !(CHAR4_EQ(0, key_len))) continue; // Likely path.
+
+            for (int j = 0; j < suffix_letter_counts[i]; ++j) {
+                if (!IN_RANGE_CHAR_EQ(j, key_len)) break;
+
+                if (j == (suffix_letter_counts[i] - 1)) {
                     atomicAdd(keys_found, 1);
 
                     printf("GPU %d MATCH %s - ", *gpu, key);
