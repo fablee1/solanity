@@ -347,19 +347,10 @@ void __global__ vanity_scan(uint8_t* state, int* keys_found, int* gpu, int* exec
         for (int i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); ++i) {
             // Skip if key is too short for this suffix
             if (key_len < suffix_letter_counts[i]) continue;
-
-            // Only do quick check if suffix is long enough and has no wildcards in first 4 chars
-            bool do_quick_check = suffix_letter_counts[i] >= 4;
-            for (int j = 0; do_quick_check && j < 4; j++) {
-                if (suffixes[i][j] == '?') {
-                    do_quick_check = false;
-                }
-            }
-            
+      
             // Calculate start position for suffix comparison
             const uint8_t* suffix_start = key + (key_len - suffix_letter_counts[i]);
             
-            if (do_quick_check && !(CHAR4_EQ(0))) continue; // Likely path.
 
             for (int j = 0; j < suffix_letter_counts[i]; ++j) {
                 const uint8_t* suffix_start = key + (key_len - suffix_letter_counts[i]);
