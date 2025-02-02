@@ -353,7 +353,6 @@ void __global__ vanity_scan(uint8_t* state, int* keys_found, int* gpu, int* exec
             
 
             for (int j = 0; j < suffix_letter_counts[i]; ++j) {
-                const uint8_t* suffix_start = key + (key_len - suffix_letter_counts[i]);
                 if (!((suffix_ignore_case_char_masks[j] & (suffixes[i][j] ^ suffix_start[j])) == 0 || suffixes[i][j] == '?')) break;
 
                 if (j == (suffix_letter_counts[i] - 1)) {
