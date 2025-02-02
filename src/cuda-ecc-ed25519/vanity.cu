@@ -332,10 +332,10 @@ void __global__ vanity_scan(uint8_t* state, int* keys_found, int* gpu, int* exec
 
         b58enc(key, publick);
 
-        #define CONDITIONAL_CASE_CHAR_EQ(a, b, j, offset) ((suffix_ignore_case_char_masks[j] & (a[j] ^ b[offset + j])) == 0)
-        #define IN_RANGE_CHAR_EQ(j, key_len) ((CONDITIONAL_CASE_CHAR_EQ(suffixes[i], key, key_len - suffix_letter_counts[i] + j) | (suffixes[i][j] == '?')))
-        #define CHAR_EQ(j, key_len) ((j >= suffix_letter_counts[i]) | IN_RANGE_CHAR_EQ(j, key_len))
-        #define CHAR4_EQ(k, key_len) (CHAR_EQ(k + 0, key_len) & CHAR_EQ(k + 1, key_len) & CHAR_EQ(k + 2, key_len) & CHAR_EQ(k + 3, key_len))
+        #define CONDITIONAL_CASE_CHAR_EQ(a, b, j) ((suffix_ignore_case_char_masks[j] & (a[j] ^ b[j])) == 0)
+    #define IN_RANGE_CHAR_EQ(j) ((CONDITIONAL_CASE_CHAR_EQ(suffixes[i], key + (key_len - suffix_letter_counts[i]), j) | (suffixes[i][j] == '?')))
+    #define CHAR_EQ(j) ((j >= suffix_letter_counts[i]) | IN_RANGE_CHAR_EQ(j))
+    #define CHAR4_EQ(k) (CHAR_EQ(k + 0) & CHAR_EQ(k + 1) & CHAR_EQ(k + 2) & CHAR_EQ(k + 3))
 
         // Get the key length
         int key_len = 0;
@@ -353,10 +353,10 @@ void __global__ vanity_scan(uint8_t* state, int* keys_found, int* gpu, int* exec
                 }
             }
             
-            if (do_quick_check && !(CHAR4_EQ(0, key_len))) continue; // Likely path.
+            if (do_quick_check && !(CHAR4_EQ(0))) continue; // Likely path.
 
             for (int j = 0; j < suffix_letter_counts[i]; ++j) {
-                if (!IN_RANGE_CHAR_EQ(j, key_len)) break;
+                if (!IN_RANGE_CHAR_EQ(j)) break;
 
                 if (j == (suffix_letter_counts[i] - 1)) {
                     atomicAdd(keys_found, 1);
